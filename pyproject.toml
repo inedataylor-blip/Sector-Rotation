@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sector-momentum-bot"
+version = "0.1.0"
+description = "Leveraged Sector Momentum Strategy Bot - broker agnostic"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+alpaca = ["alpaca-py>=0.20"]
+tradier = []
+backtest = ["yfinance>=0.2"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+all = [
+    "alpaca-py>=0.20",
+    "yfinance>=0.2",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+sector-momentum = "sector_momentum_bot.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
