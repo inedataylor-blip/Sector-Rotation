@@ -88,7 +88,7 @@ def compute_trades(
                 drift = abs(diff * price) / account_value
                 if drift < rebalance_threshold and current_qty > 0 and target_qty > 0:
                     logger.debug(
-                        "Skipping %s: drift %.2%% below threshold", symbol, drift
+                        "Skipping %s: drift %.4f below threshold", symbol, drift
                     )
                     continue
             except Exception:
