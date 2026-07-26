@@ -12,8 +12,11 @@ import pandas as pd
 from sector_momentum_bot.brokers.backtest_broker import BacktestBroker
 from sector_momentum_bot.config import DEFAULT_SECTORS, StrategyConfig
 from sector_momentum_bot.rebalancer import execute_rebalance
-from sector_momentum_bot.scheduler import get_monthly_rebalance_dates
-from sector_momentum_bot.strategies.sector_rotation import generate_target_portfolio
+from sector_momentum_bot.scheduler import get_monthly_rebalance_dates, get_trading_days
+from sector_momentum_bot.strategies.sector_rotation import (
+    check_fast_riskoff,
+    generate_target_portfolio,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,68 +122,96 @@ def run_backtest(
         BacktestResult with metrics, equity curve, and trade log.
     """
     broker = BacktestBroker(price_data, initial_cash=initial_cash)
-    rebalance_dates = get_monthly_rebalance_dates(start, end)
+    trading_days = get_trading_days(start, end)
+    rebalance_dates_set = set(get_monthly_rebalance_dates(start, end))
 
-    equity_values = []
-    monthly_values = []
+    daily_equity = []
     holdings_history = []
+    days_below = 0
 
     logger.info(
-        "Backtest: %s to %s, %d rebalance dates",
-        start, end, len(rebalance_dates),
+        "Backtest: %s to %s, %d trading days, %d rebalance dates",
+        start, end, len(trading_days), len(rebalance_dates_set),
     )
 
-    for rebal_date in rebalance_dates:
-        broker.set_current_date(rebal_date)
+    for day in trading_days:
+        broker.set_current_date(day)
 
         try:
-            target = generate_target_portfolio(broker, config, as_of=rebal_date)
-            result = execute_rebalance(
-                broker, target,
-                rebalance_threshold=config.rebalance_threshold,
-            )
+            if day in rebalance_dates_set:
+                target = generate_target_portfolio(broker, config, as_of=day)
+                execute_rebalance(
+                    broker, target,
+                    rebalance_threshold=config.rebalance_threshold,
+                )
 
-            value = broker.get_account_value()
-            equity_values.append((rebal_date, value))
-            monthly_values.append(value)
+                _, days_below = check_fast_riskoff(
+                    broker, config, as_of=day, days_below=days_below,
+                )
 
-            holdings = {
-                "date": rebal_date.isoformat(),
-                "value": round(value, 2),
-                "positions": {s: q for s, q in broker._positions.items() if q > 0},
-                "target": target,
-            }
-            holdings_history.append(holdings)
+                value = broker.get_account_value()
+                holdings_history.append({
+                    "date": day.isoformat(),
+                    "value": round(value, 2),
+                    "positions": {s: q for s, q in broker._positions.items() if q > 0},
+                    "target": target,
+                })
 
-            logger.info(
-                "%s: value=$%.2f, holdings=%s",
-                rebal_date, value,
-                list(target.keys()),
-            )
+                logger.info(
+                    "%s [REBALANCE]: value=$%.2f, holdings=%s",
+                    day, value, list(target.keys()),
+                )
+            else:
+                is_riskoff, days_below = check_fast_riskoff(
+                    broker, config, as_of=day, days_below=days_below,
+                )
+
+                if is_riskoff:
+                    bonds = config.effective_bonds()
+                    target = {bonds: 1.0}
+                    execute_rebalance(
+                        broker, target,
+                        rebalance_threshold=config.rebalance_threshold,
+                    )
+
+                    value = broker.get_account_value()
+                    holdings_history.append({
+                        "date": day.isoformat(),
+                        "value": round(value, 2),
+                        "positions": {s: q for s, q in broker._positions.items() if q > 0},
+                        "target": target,
+                    })
+
+                    logger.info(
+                        "%s [FAST RISK-OFF]: value=$%.2f, moved to %s",
+                        day, value, bonds,
+                    )
         except Exception as e:
-            logger.error("Error on %s: %s", rebal_date, e)
-            value = broker.get_account_value()
-            equity_values.append((rebal_date, value))
-            monthly_values.append(value)
+            logger.error("Error on %s: %s", day, e)
 
-    # Build equity curve
+        daily_equity.append((day, broker.get_account_value()))
+
+    # Build daily equity curve
     equity_curve = pd.Series(
-        {d: v for d, v in equity_values},
+        {d: v for d, v in daily_equity},
         name="equity",
     )
 
-    # Compute metrics
+    # Compute metrics using daily frequency
     metrics = _compute_metrics(
         equity_curve=equity_curve,
         initial_cash=initial_cash,
         start=start,
         end=end,
         trade_count=len(broker.get_trade_log()),
+        periods_per_year=252,
     )
 
-    # Monthly returns
-    values = pd.Series(monthly_values)
-    monthly_returns = values.pct_change().dropna()
+    # Derive monthly returns from daily equity curve
+    monthly_equity = equity_curve.copy()
+    monthly_equity.index = pd.to_datetime(monthly_equity.index)
+    monthly_equity = monthly_equity.resample("ME").last()
+    monthly_returns = monthly_equity.pct_change().dropna()
 
     # Trade log
     trade_log = [
@@ -208,6 +239,7 @@ def _compute_metrics(
     start: date,
     end: date,
     trade_count: int,
+    periods_per_year: int = 252,
 ) -> BacktestMetrics:
     """Calculate performance metrics from an equity curve."""
     if equity_curve.empty:
@@ -235,14 +267,14 @@ def _compute_metrics(
 
     # Sharpe (annualized, assuming monthly)
     if len(returns) > 1 and returns.std() > 0:
-        sharpe = float(returns.mean() / returns.std() * np.sqrt(12))
+        sharpe = float(returns.mean() / returns.std() * np.sqrt(periods_per_year))
     else:
         sharpe = 0.0
 
     # Sortino
     downside = returns[returns < 0]
     if len(downside) > 1 and downside.std() > 0:
-        sortino = float(returns.mean() / downside.std() * np.sqrt(12))
+        sortino = float(returns.mean() / downside.std() * np.sqrt(periods_per_year))
     else:
         sortino = 0.0
 

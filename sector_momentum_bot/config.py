@@ -113,6 +113,11 @@ class StrategyConfig:
     min_sectors: int = 1
     max_sectors: int = 5
 
+    # Fast risk-off filter (daily SMA check)
+    fast_riskoff_enabled: bool = True
+    fast_riskoff_sma_days: int = 200  # SPY below 200-day SMA → risk-off
+    fast_riskoff_confirmation_days: int = 1  # consecutive days below SMA to trigger
+
     # Volatility targeting (optional)
     vol_target: Optional[float] = None  # e.g. 0.15 for 15%
     vol_lookback_days: int = 60

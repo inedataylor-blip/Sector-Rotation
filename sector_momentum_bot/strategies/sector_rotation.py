@@ -18,12 +18,52 @@ from sector_momentum_bot.config import (
     signal_to_sector,
 )
 from sector_momentum_bot.momentum import (
+    _get_close_series,
     calculate_momentum,
     calculate_sector_volatility,
     simple_12m_return,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def check_fast_riskoff(
+    broker: BaseBroker,
+    config: StrategyConfig,
+    as_of: Optional[date] = None,
+    days_below: int = 0,
+) -> tuple[bool, int]:
+    """
+    Fast daily risk-off check: is SPY below its N-day SMA?
+
+    Returns (is_riskoff, consecutive_days_below).
+    The caller tracks days_below across iterations and passes it in.
+    Risk-off triggers when days_below >= config.fast_riskoff_confirmation_days.
+    """
+    if not config.fast_riskoff_enabled:
+        return False, 0
+
+    sma_days = config.fast_riskoff_sma_days
+    closes = _get_close_series(broker, config.market_benchmark, sma_days, as_of)
+
+    if len(closes) < sma_days:
+        return False, 0
+
+    current_price = closes.iloc[-1]
+    sma = closes.iloc[-sma_days:].mean()
+
+    if current_price < sma:
+        days_below += 1
+    else:
+        days_below = 0
+
+    is_riskoff = days_below >= config.fast_riskoff_confirmation_days
+    if is_riskoff:
+        logger.info(
+            "FAST RISK-OFF: %s=%.2f < SMA(%d)=%.2f (%d days)",
+            config.market_benchmark, current_price, sma_days, sma, days_below,
+        )
+    return is_riskoff, days_below
 
 
 def compute_sector_scores(

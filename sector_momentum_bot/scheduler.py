@@ -35,6 +35,17 @@ def _last_trading_day_of_month(year: int, month: int) -> date:
     return d
 
 
+def get_trading_days(start: date, end: date) -> list[date]:
+    """Return all weekdays (Mon-Fri) between start and end inclusive."""
+    days = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return days
+
+
 def get_monthly_rebalance_dates(
     start: date,
     end: date,
